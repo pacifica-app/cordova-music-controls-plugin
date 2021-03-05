@@ -10,6 +10,7 @@ import java.io.File;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Random;
+import java.util.function.Consumer;
 
 import android.util.Log;
 import android.R;
@@ -27,14 +28,19 @@ import android.net.Uri;
 
 import android.app.NotificationChannel;
 
+import androidx.annotation.GuardedBy;
+
 public class MusicControlsNotification {
-	private Activity cordovaActivity;
-	private NotificationManager notificationManager;
-	private Notification.Builder notificationBuilder;
-	private int notificationID;
+	private final Activity cordovaActivity;
+	private final NotificationManager notificationManager;
+	private final int notificationID;
+	private final String CHANNEL_ID;
+
+	@GuardedBy("this")
 	private MusicControlsInfos infos;
+
+	@GuardedBy("this")
 	private Bitmap bitmapCover;
-	private String CHANNEL_ID;
 
 	// Public Constructor
 	public MusicControlsNotification(Activity cordovaActivity,int id){
@@ -59,50 +65,64 @@ public class MusicControlsNotification {
 			mChannel.setDescription(description);
 
 			this.notificationManager.createNotificationChannel(mChannel);
-    }
+		}
 
 	}
 
 	// Show or update notification
 	public void updateNotification(MusicControlsInfos newInfos){
-		// Check if the cover has changed	
-		if (!newInfos.cover.isEmpty() && (this.infos == null || !newInfos.cover.equals(this.infos.cover))){
+		if (newInfos == null) {
+			Log.e("MusicControls", "updateNotification called with null MusicControlsInfos");
+			return;
+		}
+
+		MusicControlsInfos oldInfos = getInfos();
+		setInfos(newInfos);
+
+		if (!newInfos.cover.isEmpty() && (oldInfos == null || !newInfos.cover.equals(oldInfos.cover))) {
 			this.getBitmapCover(newInfos.cover);
 		}
-		this.infos = newInfos;
-		this.createBuilder();
-		Notification noti = this.notificationBuilder.build();
-		this.notificationManager.notify(this.notificationID, noti);
+
+		updateNotification(i -> {}, "updateNotification");
 	}
 
 	// Toggle the play/pause button
 	public void updateIsPlaying(boolean isPlaying){
-		this.infos.isPlaying=isPlaying;
-		this.createBuilder();
-		Notification noti = this.notificationBuilder.build();
-		this.notificationManager.notify(this.notificationID, noti);
+		updateNotification(i -> i.isPlaying=isPlaying, "updateIsPlaying");
 	}
 
 	// Toggle the dismissable status
 	public void updateDismissable(boolean dismissable){
-		this.infos.dismissable=dismissable;
-		this.createBuilder();
-		Notification noti = this.notificationBuilder.build();
+		updateNotification(i -> i.dismissable=dismissable, "updateDismissable");
+	}
+
+	private void updateNotification(Consumer<MusicControlsInfos> infosUpdater, String action) {
+		MusicControlsInfos currentInfos = getInfos();
+		if (currentInfos == null) {
+			Log.e("MusicControls", action + " called with no MusicControlsInfos");
+			return;
+		}
+
+		infosUpdater.accept(currentInfos);
+		Notification noti = createBuilder(currentInfos).build();
 		this.notificationManager.notify(this.notificationID, noti);
 	}
 
 	// Get image from url
 	private void getBitmapCover(String coverURL){
+		Bitmap newCover;
 		try{
 			if(coverURL.matches("^(https?|ftp)://.*$"))
 				// Remote image
-				this.bitmapCover = getBitmapFromURL(coverURL);
+				newCover = getBitmapFromURL(coverURL);
 			else{
 				// Local image
-				this.bitmapCover = getBitmapFromLocal(coverURL);
+				newCover = getBitmapFromLocal(coverURL);
 			}
+
+			setBitmapCover(newCover);
 		} catch (Exception ex) {
-			ex.printStackTrace();
+			Log.e("MusicControls", "error loading cover image", ex);
 		}
 	}
 
@@ -147,7 +167,7 @@ public class MusicControlsNotification {
 		}
 	}
 
-	private void createBuilder(){
+	private Notification.Builder createBuilder(MusicControlsInfos buildFrom){
 		Context context = cordovaActivity;
 		Notification.Builder builder = new Notification.Builder(context);
 
@@ -157,14 +177,14 @@ public class MusicControlsNotification {
 		}
 
 		//Configure builder
-		builder.setContentTitle(infos.track);
-		if (!infos.artist.isEmpty()){
-			builder.setContentText(infos.artist);
+		builder.setContentTitle(buildFrom.track);
+		if (!buildFrom.artist.isEmpty()){
+			builder.setContentText(buildFrom.artist);
 		}
 		builder.setWhen(0);
 
 		// set if the notification can be destroyed by swiping
-		if (infos.dismissable){
+		if (buildFrom.dismissable){
 			builder.setOngoing(false);
 			Intent dismissIntent = new Intent("music-controls-destroy");
 			PendingIntent dismissPendingIntent = PendingIntent.getBroadcast(context, 1, dismissIntent, 0);
@@ -172,10 +192,10 @@ public class MusicControlsNotification {
 		} else {
 			builder.setOngoing(true);
 		}
-		if (!infos.ticker.isEmpty()){
-			builder.setTicker(infos.ticker);
+		if (!buildFrom.ticker.isEmpty()){
+			builder.setTicker(buildFrom.ticker);
 		}
-		
+
 		builder.setPriority(Notification.PRIORITY_MAX);
 
 		//If 5.0 >= set the controls to be visible on lockscreen
@@ -184,9 +204,9 @@ public class MusicControlsNotification {
 		}
 
 		//Set SmallIcon
-		boolean usePlayingIcon = infos.notificationIcon.isEmpty();
+		boolean usePlayingIcon = buildFrom.notificationIcon.isEmpty();
 		if(!usePlayingIcon){
-			int resId = this.getResourceId(infos.notificationIcon, 0);
+			int resId = this.getResourceId(buildFrom.notificationIcon, 0);
 			usePlayingIcon = resId == 0;
 			if(!usePlayingIcon) {
 				builder.setSmallIcon(resId);
@@ -194,16 +214,17 @@ public class MusicControlsNotification {
 		}
 
 		if(usePlayingIcon){
-			if (infos.isPlaying){
-				builder.setSmallIcon(this.getResourceId(infos.playIcon, android.R.drawable.ic_media_play));
+			if (buildFrom.isPlaying){
+				builder.setSmallIcon(this.getResourceId(buildFrom.playIcon, android.R.drawable.ic_media_play));
 			} else {
-				builder.setSmallIcon(this.getResourceId(infos.pauseIcon, android.R.drawable.ic_media_pause));
+				builder.setSmallIcon(this.getResourceId(buildFrom.pauseIcon, android.R.drawable.ic_media_pause));
 			}
 		}
 
 		//Set LargeIcon
-		if (!infos.cover.isEmpty() && this.bitmapCover != null){
-			builder.setLargeIcon(this.bitmapCover);
+		Bitmap cover = getBitmapCover();
+		if (!buildFrom.cover.isEmpty() && cover != null){
+			builder.setLargeIcon(cover);
 		}
 
 		//Open app if tapped
@@ -216,38 +237,38 @@ public class MusicControlsNotification {
 		//Controls
 		int nbControls=0;
 		/* Previous  */
-		if (infos.hasPrev){
+		if (buildFrom.hasPrev){
 			nbControls++;
 			Intent previousIntent = new Intent("music-controls-previous");
 			PendingIntent previousPendingIntent = PendingIntent.getBroadcast(context, 1, previousIntent, 0);
-			builder.addAction(this.getResourceId(infos.prevIcon, android.R.drawable.ic_media_previous), "", previousPendingIntent);
+			builder.addAction(this.getResourceId(buildFrom.prevIcon, android.R.drawable.ic_media_previous), "", previousPendingIntent);
 		}
-		if (infos.isPlaying){
+		if (buildFrom.isPlaying){
 			/* Pause  */
 			nbControls++;
 			Intent pauseIntent = new Intent("music-controls-pause");
 			PendingIntent pausePendingIntent = PendingIntent.getBroadcast(context, 1, pauseIntent, 0);
-			builder.addAction(this.getResourceId(infos.pauseIcon, android.R.drawable.ic_media_pause), "", pausePendingIntent);
+			builder.addAction(this.getResourceId(buildFrom.pauseIcon, android.R.drawable.ic_media_pause), "", pausePendingIntent);
 		} else {
 			/* Play  */
 			nbControls++;
 			Intent playIntent = new Intent("music-controls-play");
 			PendingIntent playPendingIntent = PendingIntent.getBroadcast(context, 1, playIntent, 0);
-			builder.addAction(this.getResourceId(infos.playIcon, android.R.drawable.ic_media_play), "", playPendingIntent);
+			builder.addAction(this.getResourceId(buildFrom.playIcon, android.R.drawable.ic_media_play), "", playPendingIntent);
 		}
 		/* Next */
-		if (infos.hasNext){
+		if (buildFrom.hasNext){
 			nbControls++;
 			Intent nextIntent = new Intent("music-controls-next");
 			PendingIntent nextPendingIntent = PendingIntent.getBroadcast(context, 1, nextIntent, 0);
-			builder.addAction(this.getResourceId(infos.nextIcon, android.R.drawable.ic_media_next), "", nextPendingIntent);
+			builder.addAction(this.getResourceId(buildFrom.nextIcon, android.R.drawable.ic_media_next), "", nextPendingIntent);
 		}
 		/* Close */
-		if (infos.hasClose){
+		if (buildFrom.hasClose){
 			nbControls++;
 			Intent destroyIntent = new Intent("music-controls-destroy");
 			PendingIntent destroyPendingIntent = PendingIntent.getBroadcast(context, 1, destroyIntent, 0);
-			builder.addAction(this.getResourceId(infos.closeIcon, android.R.drawable.ic_menu_close_clear_cancel), "", destroyPendingIntent);
+			builder.addAction(this.getResourceId(buildFrom.closeIcon, android.R.drawable.ic_menu_close_clear_cancel), "", destroyPendingIntent);
 		}
 
 		//If 5.0 >= use MediaStyle
@@ -258,7 +279,7 @@ public class MusicControlsNotification {
 			}
 			builder.setStyle(new Notification.MediaStyle().setShowActionsInCompactView(args));
 		}
-		this.notificationBuilder = builder;
+		return builder;
 	}
 
 	private int getResourceId(String name, int fallback){
@@ -273,6 +294,22 @@ public class MusicControlsNotification {
 		catch(Exception ex){
 			return fallback;
 		}
+	}
+
+	private synchronized void setInfos(MusicControlsInfos newInfos) {
+		this.infos = newInfos;
+	}
+
+	private synchronized MusicControlsInfos getInfos() {
+		return this.infos;
+	}
+
+	private synchronized Bitmap getBitmapCover() {
+		return bitmapCover;
+	}
+
+	private synchronized void setBitmapCover(Bitmap bitmapCover) {
+		this.bitmapCover = bitmapCover;
 	}
 
 	public void destroy(){
