@@ -10,7 +10,6 @@ import java.io.File;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Random;
-import java.util.function.Consumer;
 
 import android.util.Log;
 import android.R;
@@ -31,6 +30,11 @@ import android.app.NotificationChannel;
 import androidx.annotation.GuardedBy;
 
 public class MusicControlsNotification {
+
+  private interface MusicControlsInfoConsumer {
+    void accept(MusicControlsInfos infos);
+  }
+
 	private final Activity cordovaActivity;
 	private final NotificationManager notificationManager;
 	private final int notificationID;
@@ -96,7 +100,7 @@ public class MusicControlsNotification {
 		updateNotification(i -> i.dismissable=dismissable, "updateDismissable");
 	}
 
-	private void updateNotification(Consumer<MusicControlsInfos> infosUpdater, String action) {
+	private void updateNotification(MusicControlsInfoConsumer infosUpdater, String action) {
 		MusicControlsInfos currentInfos = getInfos();
 		if (currentInfos == null) {
 			Log.e("MusicControls", action + " called with no MusicControlsInfos");
